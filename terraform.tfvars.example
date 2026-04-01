@@ -1,0 +1,32 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# DO NOT commit terraform.tfvars to version control.
+
+# ─────────────────────────────────────────────
+# General
+# ─────────────────────────────────────────────
+aws_region   = "us-east-1"
+project_name = "my-project"
+environment  = "dev"
+
+# ─────────────────────────────────────────────
+# VPC
+# ─────────────────────────────────────────────
+vpc_cidr             = "10.0.0.0/16"
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.11.0/24", "10.0.12.0/24"]
+availability_zones   = ["us-east-1a", "us-east-1b"]
+
+# ─────────────────────────────────────────────
+# EC2
+# ─────────────────────────────────────────────
+instance_type    = "t3.micro"
+ami_id           = "ami-0c02fb55956c7d316"  # Amazon Linux 2023 (us-east-1)
+key_pair_name    = ""                        # Replace with your EC2 Key Pair name
+allowed_ssh_cidr = "YOUR_IP/32"             # Replace with your IP for security
+
+# ─────────────────────────────────────────────
+# S3
+# ─────────────────────────────────────────────
+s3_bucket_name        = ""    # Leave empty to auto-generate a unique name
+s3_versioning_enabled = true
+s3_force_destroy      = false
