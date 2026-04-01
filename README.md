@@ -200,4 +200,4 @@ This starter kit is designed to be extended. Ideas:
 
 ## 📄 License
 
-MIT © [Your Name](https://github.com/YOUR_USERNAME)
+MIT © [Anas Tanveer](https://github.com/Anas Tanveer)
