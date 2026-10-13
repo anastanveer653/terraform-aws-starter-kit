@@ -1,0 +1,62 @@
+name: apply
+
+# Called by terraform.yml after a merge to main; not triggered directly.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Environment to apply (dev or prod).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_VERSION: 1.16.5
+
+jobs:
+  apply:
+    name: apply (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    # Binding the job to an environment makes the OIDC subject
+    # repo:<owner>/<name>:environment:<env>, the only subject the apply role trusts.
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: apply-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Init
+        run: >
+          terraform init -input=false
+          -backend-config=environments/${{ inputs.environment }}.s3.tfbackend
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="kms_key_id=${{ vars.TF_STATE_KMS_KEY_ARN }}"
+
+      - name: Plan
+        run: |
+          set -o pipefail
+          terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan \
+            -var-file=environments/${{ inputs.environment }}.tfvars | tee plan.txt
+          {
+            echo "### Applied plan: ${{ inputs.environment }}"
+            echo '```'
+            tail -n 60 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply
+        run: terraform apply -input=false -lock-timeout=5m tfplan

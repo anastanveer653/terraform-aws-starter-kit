@@ -1,0 +1,64 @@
+name: drift
+
+# Weekday check that live infrastructure still matches main. A manual console
+# change, or a new AMI on an environment without a pinned ami_id, fails this run.
+on:
+  schedule:
+    - cron: "17 6 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_VERSION: 1.16.5
+
+jobs:
+  drift:
+    name: drift (${{ matrix.environment }})
+    if: vars.AWS_PLAN_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Init
+        run: >
+          terraform init -input=false
+          -backend-config=environments/${{ matrix.environment }}.s3.tfbackend
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="kms_key_id=${{ vars.TF_STATE_KMS_KEY_ARN }}"
+
+      # -detailed-exitcode: 0 = in sync, 1 = error, 2 = drift.
+      - name: Detect drift
+        run: |
+          set +e
+          terraform plan -lock=false -input=false -no-color -detailed-exitcode \
+            -var-file=environments/${{ matrix.environment }}.tfvars > plan.txt 2>&1
+          code=$?
+          set -e
+          cat plan.txt
+          if [ "$code" -eq 2 ]; then
+            {
+              echo "### Drift detected: ${{ matrix.environment }}"
+              echo '```'
+              tail -n 60 plan.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Infrastructure in ${{ matrix.environment }} has drifted from main."
+          fi
+          exit "$code"
