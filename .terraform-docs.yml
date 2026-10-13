@@ -1,0 +1,21 @@
+# terraform-docs --config .terraform-docs.yml .   (also regenerates every module under modules/)
+formatter: markdown table
+version: ">= 0.20.0, < 1.0.0"
+
+recursive:
+  enabled: true
+  path: modules
+  include-main: true
+
+output:
+  file: README.md
+  mode: inject
+
+sort:
+  enabled: true
+  by: required
+
+settings:
+  anchor: false
+  hide-empty: true
+  lockfile: false

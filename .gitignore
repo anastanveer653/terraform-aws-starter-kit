@@ -7,9 +7,8 @@
 terraform.tfvars
 *.auto.tfvars
 
-# Terraform working directories
+# Terraform working directories (commit .terraform.lock.hcl so everyone gets the same provider build)
 .terraform/
-.terraform.lock.hcl
 
 # Crash logs
 crash.log

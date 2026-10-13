@@ -1,0 +1,6 @@
+# LF everywhere, so terraform fmt and CI agree with Windows checkouts.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.zip binary
