@@ -1,0 +1,7 @@
+# Fill in from the outputs of bootstrap/ (state_bucket_name, state_kms_key_arn).
+bucket       = "REPLACE-WITH-STATE-BUCKET"
+kms_key_id   = "REPLACE-WITH-STATE-KMS-KEY-ARN"
+key          = "starter-kit/dev/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true

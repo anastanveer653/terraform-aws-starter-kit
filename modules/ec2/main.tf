@@ -1,151 +1,212 @@
-# ─────────────────────────────────────────────
-# Security Group — Bastion Host
-# ─────────────────────────────────────────────
-resource "aws_security_group" "bastion" {
-  name        = "${var.project_name}-${var.environment}-bastion-sg"
-  description = "Security group for bastion/web EC2 instance"
-  vpc_id      = var.vpc_id
+locals {
+  app_port = 80
+  ami_id   = var.ami_id != null ? var.ami_id : data.aws_ssm_parameter.ami[0].insecure_value
+}
 
-  # SSH access
-  ingress {
-    description = "SSH from allowed CIDR"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.allowed_ssh_cidr]
-  }
+# Without a pinned ami_id, track the latest Amazon Linux 2023 AMI. Each new release
+# changes the launch template, and the next apply rolls every instance onto it.
+data "aws_ssm_parameter" "ami" {
+  count = var.ami_id == null ? 1 : 0
 
-  # HTTP (uncomment for web servers)
-  # ingress {
-  #   description = "HTTP"
-  #   from_port   = 80
-  #   to_port     = 80
-  #   protocol    = "tcp"
-  #   cidr_blocks = ["0.0.0.0/0"]
-  # }
-
-  # HTTPS (uncomment for web servers)
-  # ingress {
-  #   description = "HTTPS"
-  #   from_port   = 443
-  #   to_port     = 443
-  #   protocol    = "tcp"
-  #   cidr_blocks = ["0.0.0.0/0"]
-  # }
-
-  egress {
-    description = "Allow all outbound"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.project_name}-${var.environment}-bastion-sg"
-  }
+  name = var.ami_ssm_parameter
 }
 
 # ─────────────────────────────────────────────
-# IAM Role for EC2 (SSM + S3 read access)
+# Security group: reachable only from the load balancer
 # ─────────────────────────────────────────────
-resource "aws_iam_role" "ec2_role" {
-  name = "${var.project_name}-${var.environment}-ec2-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
-  })
+resource "aws_security_group" "app" {
+  name        = "${var.name}-app-sg"
+  description = "Application instances, reachable only from the load balancer"
+  vpc_id      = var.vpc_id
 
   tags = {
-    Name = "${var.project_name}-${var.environment}-ec2-role"
+    Name = "${var.name}-app-sg"
   }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "from_alb" {
+  security_group_id            = aws_security_group.app.id
+  description                  = "HTTP from the load balancer only"
+  referenced_security_group_id = var.alb_security_group_id
+  ip_protocol                  = "tcp"
+  from_port                    = local.app_port
+  to_port                      = local.app_port
+}
+
+# HTTPS out is all the instances need: SSM, package repos and AWS APIs.
+resource "aws_vpc_security_group_egress_rule" "https_out" {
+  security_group_id = aws_security_group.app.id
+  description       = "HTTPS to AWS APIs and package repositories"
+  # Accepted risk: AWS public endpoints have no fixed CIDR; port is limited to 443.
+  #trivy:ignore:AWS-0104
+  cidr_ipv4   = "0.0.0.0/0"
+  ip_protocol = "tcp"
+  from_port   = 443
+  to_port     = 443
+}
+
+# ─────────────────────────────────────────────
+# IAM: SSM access plus least-privilege access to one bucket
+# ─────────────────────────────────────────────
+data "aws_iam_policy_document" "assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "app" {
+  name               = "${var.name}-app-role"
+  assume_role_policy = data.aws_iam_policy_document.assume.json
 }
 
 resource "aws_iam_role_policy_attachment" "ssm" {
-  role       = aws_iam_role.ec2_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  role       = aws_iam_role.app.name
+  policy_arn = "arn:${var.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_iam_role_policy_attachment" "s3_read" {
-  role       = aws_iam_role.ec2_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
-}
-
-resource "aws_iam_instance_profile" "ec2_profile" {
-  name = "${var.project_name}-${var.environment}-ec2-profile"
-  role = aws_iam_role.ec2_role.name
-}
-
-# ─────────────────────────────────────────────
-# EC2 Instance
-# ─────────────────────────────────────────────
-resource "aws_instance" "main" {
-  ami                    = var.ami_id
-  instance_type          = var.instance_type
-  subnet_id              = var.subnet_id
-  vpc_security_group_ids = [aws_security_group.bastion.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
-  key_name               = var.key_pair_name != "" ? var.key_pair_name : null
-
-  # Encrypted root volume
-  root_block_device {
-    volume_type           = "gp3"
-    volume_size           = 20
-    encrypted             = true
-    delete_on_termination = true
-
-    tags = {
-      Name = "${var.project_name}-${var.environment}-root-ebs"
-    }
+data "aws_iam_policy_document" "data_bucket" {
+  statement {
+    sid       = "ListDataBucket"
+    actions   = ["s3:ListBucket"]
+    resources = [var.data_bucket_arn]
   }
 
-  # User data: basic hardening + tools
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    set -e
+  statement {
+    sid       = "ReadWriteDataObjects"
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["${var.data_bucket_arn}/*"]
+  }
 
-    # Update system
-    dnf update -y
+  statement {
+    sid       = "UseDataKey"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
+    resources = [var.kms_key_arn]
+  }
+}
 
-    # Install useful tools
-    dnf install -y \
-      aws-cli \
-      htop \
-      git \
-      curl \
-      wget \
-      unzip
+resource "aws_iam_role_policy" "data_bucket" {
+  name   = "data-bucket-access"
+  role   = aws_iam_role.app.id
+  policy = data.aws_iam_policy_document.data_bucket.json
+}
 
-    # Enable and start SSM agent
-    systemctl enable amazon-ssm-agent
-    systemctl start amazon-ssm-agent
+resource "aws_iam_instance_profile" "app" {
+  name = "${var.name}-app-profile"
+  role = aws_iam_role.app.name
+}
 
-    # Disable root SSH login
-    sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-    systemctl restart sshd
+# ─────────────────────────────────────────────
+# Launch template
+# ─────────────────────────────────────────────
+resource "aws_launch_template" "app" {
+  name_prefix            = "${var.name}-app-"
+  image_id               = local.ami_id
+  instance_type          = var.instance_type
+  vpc_security_group_ids = [aws_security_group.app.id]
+  update_default_version = true
 
-    echo "Bootstrap complete." >> /var/log/user-data.log
-  EOF
-  )
+  user_data = base64encode(templatefile("${path.module}/user_data.sh.tftpl", {
+    name = var.name
+  }))
+
+  iam_instance_profile {
+    arn = aws_iam_instance_profile.app.arn
+  }
 
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = "required" # IMDSv2 enforced
+    http_tokens                 = "required" # IMDSv2 only
     http_put_response_hop_limit = 1
   }
 
-  monitoring = true
+  monitoring {
+    enabled = var.detailed_monitoring
+  }
 
-  tags = {
-    Name = "${var.project_name}-${var.environment}-bastion"
+  block_device_mappings {
+    device_name = "/dev/xvda"
+
+    ebs {
+      volume_type           = "gp3"
+      volume_size           = var.root_volume_size
+      encrypted             = true
+      delete_on_termination = true
+    }
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "${var.name}-app"
+    }
+  }
+
+  tag_specifications {
+    resource_type = "volume"
+    tags = {
+      Name = "${var.name}-app-root"
+    }
+  }
+}
+
+# ─────────────────────────────────────────────
+# Auto Scaling Group
+# ─────────────────────────────────────────────
+resource "aws_autoscaling_group" "app" {
+  name                      = "${var.name}-app-asg"
+  vpc_zone_identifier       = var.private_subnet_ids
+  min_size                  = var.min_size
+  max_size                  = var.max_size
+  desired_capacity          = var.desired_capacity
+  target_group_arns         = [var.target_group_arn]
+  health_check_type         = "ELB"
+  health_check_grace_period = 180
+
+  launch_template {
+    id      = aws_launch_template.app.id
+    version = aws_launch_template.app.latest_version
+  }
+
+  # Changing the launch template replaces instances gradually, not all at once.
+  instance_refresh {
+    strategy = "Rolling"
+
+    preferences {
+      min_healthy_percentage = 50
+    }
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "${var.name}-app"
+    propagate_at_launch = true
   }
 
   lifecycle {
-    ignore_changes = [ami_id, user_data]
+    precondition {
+      condition     = var.min_size <= var.desired_capacity && var.desired_capacity <= var.max_size
+      error_message = "Auto Scaling sizes must satisfy min_size <= desired_capacity <= max_size."
+    }
+
+    # The scaling policy owns desired_capacity after the first apply.
+    ignore_changes = [desired_capacity]
+  }
+}
+
+resource "aws_autoscaling_policy" "cpu" {
+  name                   = "${var.name}-cpu-target"
+  autoscaling_group_name = aws_autoscaling_group.app.name
+  policy_type            = "TargetTrackingScaling"
+
+  target_tracking_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+    target_value = var.cpu_target_utilization
   }
 }

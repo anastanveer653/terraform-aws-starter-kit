@@ -1,0 +1,25 @@
+#!/bin/bash
+set -euo pipefail
+exec > >(tee -a /var/log/user-data.log) 2>&1
+
+dnf install -y nginx
+
+TOKEN=$(curl -sS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+INSTANCE_ID=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+AZ=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+cat > /usr/share/nginx/html/index.html <<HTML
+<!doctype html>
+<html>
+  <head><title>${name}</title></head>
+  <body>
+    <h1>${name}</h1>
+    <p>Served by $INSTANCE_ID in $AZ</p>
+  </body>
+</html>
+HTML
+
+echo "ok" > /usr/share/nginx/html/health
+
+systemctl enable --now nginx
+echo "Bootstrap complete."

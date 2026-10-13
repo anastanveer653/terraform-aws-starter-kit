@@ -1,34 +1,34 @@
 output "vpc_id" {
-  description = "ID of the VPC"
-  value       = aws_vpc.main.id
+  description = "ID of the VPC."
+  value       = aws_vpc.this.id
 }
 
 output "vpc_cidr" {
-  description = "CIDR block of the VPC"
-  value       = aws_vpc.main.cidr_block
+  description = "CIDR block of the VPC."
+  value       = aws_vpc.this.cidr_block
 }
 
 output "public_subnet_ids" {
-  description = "List of public subnet IDs"
-  value       = aws_subnet.public[*].id
+  description = "Public subnet IDs, in AZ order."
+  value       = [for az in var.azs : aws_subnet.public[az].id]
 }
 
 output "private_subnet_ids" {
-  description = "List of private subnet IDs"
-  value       = aws_subnet.private[*].id
+  description = "Private subnet IDs, in AZ order."
+  value       = [for az in var.azs : aws_subnet.private[az].id]
 }
 
-output "internet_gateway_id" {
-  description = "ID of the Internet Gateway"
-  value       = aws_internet_gateway.main.id
+output "private_route_table_ids" {
+  description = "Private route table IDs, in AZ order."
+  value       = [for az in var.azs : aws_route_table.private[az].id]
 }
 
-output "nat_gateway_id" {
-  description = "ID of the NAT Gateway"
-  value       = aws_nat_gateway.main.id
+output "nat_gateway_ids" {
+  description = "NAT Gateway IDs."
+  value       = [for nat in aws_nat_gateway.this : nat.id]
 }
 
-output "nat_gateway_public_ip" {
-  description = "Public IP address of the NAT Gateway"
-  value       = aws_eip.nat.public_ip
+output "flow_log_group_name" {
+  description = "CloudWatch log group receiving VPC flow logs."
+  value       = aws_cloudwatch_log_group.flow_logs.name
 }

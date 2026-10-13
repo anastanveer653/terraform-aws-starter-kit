@@ -1,29 +1,27 @@
 terraform {
-  required_version = ">= 1.3.0"
+  required_version = ">= 1.11.0"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 6.0"
     }
   }
 
-  # Optional: uncomment to store state in S3
-  # backend "s3" {
-  #   bucket = "your-terraform-state-bucket"
-  #   key    = "starter-kit/terraform.tfstate"
-  #   region = "us-east-1"
-  # }
+  # Partial configuration: supply the rest with
+  # terraform init -backend-config=environments/<env>.s3.tfbackend
+  backend "s3" {}
 }
 
 provider "aws" {
   region = var.aws_region
 
   default_tags {
-    tags = {
+    tags = merge(var.tags, {
       Project     = var.project_name
       Environment = var.environment
       ManagedBy   = "Terraform"
-    }
+      Repository  = "github.com/anastanveer653/terraform-aws-starter-kit"
+    })
   }
 }

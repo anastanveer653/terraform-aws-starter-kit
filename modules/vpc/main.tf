@@ -1,156 +1,271 @@
+locals {
+  az_index = { for i, az in var.azs : az => i }
+
+  # /16 VPC -> public 10.0.0-2.0/24, private 10.0.10-12.0/24
+  public_subnets  = { for az, i in local.az_index : az => cidrsubnet(var.vpc_cidr, 8, i) }
+  private_subnets = { for az, i in local.az_index : az => cidrsubnet(var.vpc_cidr, 8, i + 10) }
+
+  nat_azs = {
+    none   = []
+    single = [var.azs[0]]
+    per_az = var.azs
+  }[var.nat_gateway_mode]
+
+  ssm_endpoints = var.enable_ssm_endpoints ? toset(["ssm", "ssmmessages", "ec2messages"]) : toset([])
+}
+
 # ─────────────────────────────────────────────
 # VPC
 # ─────────────────────────────────────────────
-resource "aws_vpc" "main" {
+resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
   enable_dns_support   = true
   enable_dns_hostnames = true
 
   tags = {
-    Name = "${var.project_name}-${var.environment}-vpc"
+    Name = "${var.name}-vpc"
   }
 }
 
-# ─────────────────────────────────────────────
-# Internet Gateway
-# ─────────────────────────────────────────────
-resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
+# Strip all rules from the default security group so nothing uses it by accident.
+resource "aws_default_security_group" "this" {
+  vpc_id = aws_vpc.this.id
 
   tags = {
-    Name = "${var.project_name}-${var.environment}-igw"
+    Name = "${var.name}-default-sg-locked"
+  }
+}
+
+resource "aws_internet_gateway" "this" {
+  vpc_id = aws_vpc.this.id
+
+  tags = {
+    Name = "${var.name}-igw"
   }
 }
 
 # ─────────────────────────────────────────────
-# Public Subnets
+# Subnets
 # ─────────────────────────────────────────────
 resource "aws_subnet" "public" {
-  count = length(var.public_subnet_cidrs)
+  for_each = local.public_subnets
 
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.public_subnet_cidrs[count.index]
-  availability_zone       = var.availability_zones[count.index]
-  map_public_ip_on_launch = true
+  vpc_id            = aws_vpc.this.id
+  cidr_block        = each.value
+  availability_zone = each.key
 
   tags = {
-    Name = "${var.project_name}-${var.environment}-public-subnet-${count.index + 1}"
+    Name = "${var.name}-public-${each.key}"
     Tier = "public"
   }
 }
 
-# ─────────────────────────────────────────────
-# Private Subnets
-# ─────────────────────────────────────────────
 resource "aws_subnet" "private" {
-  count = length(var.private_subnet_cidrs)
+  for_each = local.private_subnets
 
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = var.private_subnet_cidrs[count.index]
-  availability_zone = var.availability_zones[count.index]
+  vpc_id            = aws_vpc.this.id
+  cidr_block        = each.value
+  availability_zone = each.key
 
   tags = {
-    Name = "${var.project_name}-${var.environment}-private-subnet-${count.index + 1}"
+    Name = "${var.name}-private-${each.key}"
     Tier = "private"
   }
 }
 
 # ─────────────────────────────────────────────
-# Elastic IP for NAT Gateway
+# NAT Gateways
 # ─────────────────────────────────────────────
 resource "aws_eip" "nat" {
+  for_each = toset(local.nat_azs)
+
   domain = "vpc"
 
   tags = {
-    Name = "${var.project_name}-${var.environment}-nat-eip"
+    Name = "${var.name}-nat-eip-${each.key}"
   }
 
-  depends_on = [aws_internet_gateway.main]
+  depends_on = [aws_internet_gateway.this]
 }
 
-# ─────────────────────────────────────────────
-# NAT Gateway (placed in first public subnet)
-# ─────────────────────────────────────────────
-resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[0].id
+resource "aws_nat_gateway" "this" {
+  for_each = toset(local.nat_azs)
+
+  allocation_id = aws_eip.nat[each.key].id
+  subnet_id     = aws_subnet.public[each.key].id
 
   tags = {
-    Name = "${var.project_name}-${var.environment}-nat-gw"
+    Name = "${var.name}-nat-${each.key}"
   }
 
-  depends_on = [aws_internet_gateway.main]
+  depends_on = [aws_internet_gateway.this]
 }
 
 # ─────────────────────────────────────────────
-# Route Tables
+# Routing
 # ─────────────────────────────────────────────
-
-# Public Route Table
 resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
-  }
+  vpc_id = aws_vpc.this.id
 
   tags = {
-    Name = "${var.project_name}-${var.environment}-public-rt"
+    Name = "${var.name}-public-rt"
   }
+}
+
+resource "aws_route" "public_internet" {
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.this.id
 }
 
 resource "aws_route_table_association" "public" {
-  count          = length(aws_subnet.public)
-  subnet_id      = aws_subnet.public[count.index].id
+  for_each = aws_subnet.public
+
+  subnet_id      = each.value.id
   route_table_id = aws_route_table.public.id
 }
 
-# Private Route Table
+# One private route table per AZ so per_az NAT keeps traffic inside its own AZ.
 resource "aws_route_table" "private" {
-  vpc_id = aws_vpc.main.id
+  for_each = local.private_subnets
 
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main.id
-  }
+  vpc_id = aws_vpc.this.id
 
   tags = {
-    Name = "${var.project_name}-${var.environment}-private-rt"
+    Name = "${var.name}-private-rt-${each.key}"
   }
+}
+
+resource "aws_route" "private_nat" {
+  for_each = var.nat_gateway_mode == "none" ? toset([]) : toset(var.azs)
+
+  route_table_id         = aws_route_table.private[each.key].id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.this[var.nat_gateway_mode == "per_az" ? each.key : var.azs[0]].id
 }
 
 resource "aws_route_table_association" "private" {
-  count          = length(aws_subnet.private)
-  subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private.id
+  for_each = aws_subnet.private
+
+  subnet_id      = each.value.id
+  route_table_id = aws_route_table.private[each.key].id
 }
 
 # ─────────────────────────────────────────────
-# Default Network ACL (explicit for visibility)
+# VPC endpoints
 # ─────────────────────────────────────────────
-resource "aws_default_network_acl" "main" {
-  default_network_acl_id = aws_vpc.main.default_network_acl_id
-
-  ingress {
-    rule_no    = 100
-    action     = "allow"
-    protocol   = "-1"
-    cidr_block = "0.0.0.0/0"
-    from_port  = 0
-    to_port    = 0
-  }
-
-  egress {
-    rule_no    = 100
-    action     = "allow"
-    protocol   = "-1"
-    cidr_block = "0.0.0.0/0"
-    from_port  = 0
-    to_port    = 0
-  }
+# Free gateway endpoint: S3 traffic (including Amazon Linux package repos) skips the NAT.
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.this.id
+  service_name      = "com.amazonaws.${var.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = [for rt in aws_route_table.private : rt.id]
 
   tags = {
-    Name = "${var.project_name}-${var.environment}-default-nacl"
+    Name = "${var.name}-s3-endpoint"
+  }
+}
+
+resource "aws_security_group" "endpoints" {
+  count = var.enable_ssm_endpoints ? 1 : 0
+
+  name        = "${var.name}-endpoints-sg"
+  description = "HTTPS from inside the VPC to interface endpoints"
+  vpc_id      = aws_vpc.this.id
+
+  tags = {
+    Name = "${var.name}-endpoints-sg"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "endpoints_https" {
+  count = var.enable_ssm_endpoints ? 1 : 0
+
+  security_group_id = aws_security_group.endpoints[0].id
+  description       = "HTTPS from the VPC"
+  cidr_ipv4         = var.vpc_cidr
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+}
+
+resource "aws_vpc_endpoint" "ssm" {
+  for_each = local.ssm_endpoints
+
+  vpc_id              = aws_vpc.this.id
+  service_name        = "com.amazonaws.${var.region}.${each.key}"
+  vpc_endpoint_type   = "Interface"
+  private_dns_enabled = true
+  subnet_ids          = [for s in aws_subnet.private : s.id]
+  security_group_ids  = [aws_security_group.endpoints[0].id]
+
+  tags = {
+    Name = "${var.name}-${each.key}-endpoint"
+  }
+}
+
+# ─────────────────────────────────────────────
+# Flow logs
+# ─────────────────────────────────────────────
+resource "aws_cloudwatch_log_group" "flow_logs" {
+  name              = "/vpc/${var.name}/flow-logs"
+  retention_in_days = var.flow_log_retention_days
+  kms_key_id        = var.kms_key_arn
+}
+
+# Source conditions stop another account's flow logs from using this role (confused deputy).
+data "aws_iam_policy_document" "flow_logs_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["vpc-flow-logs.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:${var.partition}:ec2:${var.region}:${var.account_id}:vpc-flow-log/*"]
+    }
+  }
+}
+
+resource "aws_iam_role" "flow_logs" {
+  name               = "${var.name}-flow-logs"
+  assume_role_policy = data.aws_iam_policy_document.flow_logs_assume.json
+}
+
+data "aws_iam_policy_document" "flow_logs" {
+  statement {
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogStreams",
+    ]
+    resources = ["${aws_cloudwatch_log_group.flow_logs.arn}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "flow_logs" {
+  name   = "write-flow-logs"
+  role   = aws_iam_role.flow_logs.id
+  policy = data.aws_iam_policy_document.flow_logs.json
+}
+
+resource "aws_flow_log" "this" {
+  vpc_id          = aws_vpc.this.id
+  traffic_type    = "ALL"
+  log_destination = aws_cloudwatch_log_group.flow_logs.arn
+  iam_role_arn    = aws_iam_role.flow_logs.arn
+
+  tags = {
+    Name = "${var.name}-flow-log"
   }
 }

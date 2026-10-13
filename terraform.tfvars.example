@@ -1,32 +1,36 @@
-# Copy this file to terraform.tfvars and fill in your values.
-# DO NOT commit terraform.tfvars to version control.
+# For a custom environment: copy to my-env.tfvars and run
+#   terraform plan -var-file=my-env.tfvars
+# Ready-made settings live in environments/{dev,staging,prod}.tfvars.
 
-# ─────────────────────────────────────────────
-# General
-# ─────────────────────────────────────────────
 aws_region   = "us-east-1"
-project_name = "my-project"
-environment  = "dev"
+project_name = "starter-kit"
+environment  = "staging"
+tags         = { Owner = "your-name" }
 
-# ─────────────────────────────────────────────
-# VPC
-# ─────────────────────────────────────────────
-vpc_cidr             = "10.0.0.0/16"
-public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
-private_subnet_cidrs = ["10.0.11.0/24", "10.0.12.0/24"]
-availability_zones   = ["us-east-1a", "us-east-1b"]
+# Network
+vpc_cidr                = "10.0.0.0/16"
+az_count                = 2
+nat_gateway_mode        = "single" # none | single | per_az
+enable_ssm_endpoints    = false
+flow_log_retention_days = 30
 
-# ─────────────────────────────────────────────
-# EC2
-# ─────────────────────────────────────────────
-instance_type    = "t3.micro"
-ami_id           = "ami-0c02fb55956c7d316"  # Amazon Linux 2023 (us-east-1)
-key_pair_name    = ""                        # Replace with your EC2 Key Pair name
-allowed_ssh_cidr = "YOUR_IP/32"             # Replace with your IP for security
+# Load balancer and edge
+certificate_arn               = "" # ACM ARN enables HTTPS
+alb_ingress_cidrs             = ["0.0.0.0/0"]
+enable_deletion_protection    = false
+enable_alb_access_logs        = false
+alb_access_log_retention_days = 90
+enable_waf                    = false
+waf_rate_limit                = 2000
 
-# ─────────────────────────────────────────────
-# S3
-# ─────────────────────────────────────────────
-s3_bucket_name        = ""    # Leave empty to auto-generate a unique name
-s3_versioning_enabled = true
-s3_force_destroy      = false
+# Compute
+instance_type          = "t3.micro"
+ami_id                 = null # pin an AMI ID to control when instances roll
+asg_min_size           = 1
+asg_max_size           = 3
+asg_desired_capacity   = 1
+cpu_target_utilization = 50
+
+# Storage and alerts
+s3_force_destroy = false
+alarm_email      = ""
