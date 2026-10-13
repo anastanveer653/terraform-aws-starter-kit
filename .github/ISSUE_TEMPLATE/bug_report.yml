@@ -1,0 +1,42 @@
+name: Bug report
+description: Something does not plan, apply or behave as documented.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the full error output if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The tfvars you used (remove anything sensitive) and the commands you ran.
+      render: hcl
+    validations:
+      required: true
+  - type: input
+    id: terraform
+    attributes:
+      label: Terraform version
+      placeholder: "1.16.5"
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: AWS provider version
+      placeholder: "6.68.0"
+  - type: input
+    id: region
+    attributes:
+      label: AWS region
+      placeholder: us-east-1
